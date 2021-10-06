@@ -11,6 +11,7 @@ if(!process.env.PASSWORD) {
 // Connection URI
 // Standard MongoDB database
 const mongoDB_URI = 'mongodb://predmain:' + process.env.PASSWORD + '@132.145.157.51:27017/predmain?authenticationDatabase=admin&compressors=zlib&gssapiServiceName=mongodb';
+
 // Oracle Database API for MongoDB with AJD-S
 //const mongoDB_URI = 'mongodb://predmain:' + process.env.PASSWORD + '@nnrtbqrbdeylh1o-loic.adb-preprod.us-phoenix-1.oraclecloudapps.com:27016/predmain?authMechanism=PLAIN&readPreference=primary&authSource=%24external&appname=MongoDB+Compass&directConnection=true&loadBalanced=false&ssl=true';
 
