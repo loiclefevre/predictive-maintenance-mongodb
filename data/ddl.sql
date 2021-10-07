@@ -1,4 +1,97 @@
--- Transform a SODA collection into a partitioned one
+-- Analyse Devices JSON data using basic SQL
+-- see raw data
+select * from devices d;
+
+-- see JSON as text
+select json_serialize( d.json_document ) from devices d;
+
+-- see JSON as text with pretty formating
+select json_serialize( d.json_document pretty ) from devices d;
+
+-- check consistency between primary key and MongoDB ObjectId
+select id as "Table ID primary key", d.json_document."_id" as "MongoDB ObjectId" from devices d;
+
+-- use SQL dot notation to access single JSON fields
+select 
+       d.json_document.id_machine,
+       d.json_document.state
+  from devices d;
+
+-- do some sorting
+  select 
+         d.json_document.id_machine,
+         d.json_document.state
+    from devices d
+order by d.json_document.state;
+
+-- do some aggregation
+  select 
+         d.json_document.state,
+         count(*)
+    from devices d
+group by d.json_document.state
+order by 2 desc;
+
+-- include groups filtering clause using having
+  select 
+         d.json_document.state,
+         count(*)
+    from devices d
+group by d.json_document.state
+  having count(*) > 50
+order by 2 desc;
+
+-- limits to 3 first states
+  select 
+         d.json_document.state,
+         count(*)
+    from devices d
+group by d.json_document.state
+  having count(*) > 50
+order by 2 desc
+fetch first 3 rows only;
+
+-- transform back into JSON documents
+  select json_object(
+         'state': d.json_document.state,
+         'machinesDeployed': count(*)
+        )
+    from devices d
+group by d.json_document.state
+  having count(*) > 50
+order by count(*) desc
+fetch first 3 rows only;
+
+-- create an array of JSON objects but here an array with one document
+  select json_array( json_object(
+         'state': d.json_document.state,
+         'machinesDeployed': count(*)
+        ) )
+    from devices d
+group by d.json_document.state
+  having count(*) > 50
+order by count(*) desc
+fetch first 3 rows only;
+
+-- create only one array of JSON objects sorted by states with the greatest number of deployed machines
+with states_json_data as (
+      select json_object(
+             'state': d.json_document.state,
+             'machinesDeployed': count(*)
+            ) as json_document,
+            count(*) as machinesDeployed
+        from devices d
+    group by d.json_document.state
+      having count(*) > 50
+    order by count(*) desc
+    fetch first 3 rows only
+   )
+select json_arrayagg( json_document ) 
+from states_json_data;
+
+
+
+-- Transform a collection into a partitioned one
 alter table device_metrics modify
   PARTITION BY RANGE (CREATED_ON) INTERVAL (INTERVAL '1' MINUTE)
   ( PARTITION part_01 values LESS THAN (TO_TIMESTAMP('01-SEP-2021','DD-MON-YYYY')) ) ONLINE
@@ -55,3 +148,58 @@ json_value( d.json_document, '$.geometry' RETURNING SDO_GEOMETRY )
 from devices d;
 
 select * from devices_relational;
+
+-- SQL query to link latest 10 seconds of device metrics with devices spatial locations while predicting the potential of a failure using a machine learning model stored inside the database
+select m.id_machine as id, 
+        (select json_value( d.json_document, '$.geometry' RETURNING SDO_GEOMETRY ) from devices d where d.json_document.id_machine.string() = m.id_machine) as geometry,
+        -- Machine Learning scoring over features from JSON fields
+        PREDICTION(PM_RF_AUTOML USING m.*) as prediction,
+        -- Machine Learning scoring over features from JSON fields
+        PREDICTION_probability(PM_RF_AUTOML USING m.*) as prediction_probability
+-- view retrieving 10 latest seconds of device metrics
+from device_metrics_view m;
+
+
+-- SQL query to use for APEX Heatmap plugin, using the GeoJSON and schema-on-read approach (e.g. parsing the GeoJSON data for each query execution)
+-- Duration: 2-3 seconds
+with data as (
+       select m.id_machine as id, 
+--              (select d.geometry from devices_relational d where m.id_machine = d.id_machine) as geometry,
+              (select json_value( d.json_document, '$.geometry' RETURNING SDO_GEOMETRY ) from devices d where d.json_document.id_machine.string() = m.id_machine) as geometry,
+              -- Machine Learning scoring over features from JSON fields
+              PREDICTION(PM_RF_AUTOML USING m.*) as prediction,
+              -- Machine Learning scoring over features from JSON fields
+              PREDICTION_probability(PM_RF_AUTOML USING m.*) as prediction_probability
+        from device_metrics_view m)
+-- Select devices for Heatmap (with failure prediction confidence greater than 80%)
+select id, geometry, '' as infotip, 'red' as style, 'heat' as layer, 'C9' as markersize from data d
+where d.prediction = 1 and prediction_probability >= 0.8
+union all
+-- Select all devices for green/red markers
+select id, geometry, 'Device '||id|| ' (confidence:' || to_char(100*prediction_probability,'999.9') || '%)' as infotip, 
+       case when prediction = 0 or prediction_probability < 0.8 then 'green' else 'red' end as style, 
+       '1' as layer, 
+       'C9' as markersize 
+from data d;
+
+-- SQL query to use for APEX Heatmap plugin, using the GeoJSON and schema-on-write approach (e.g. GeoJSON are parsed once and persisted into a relational table with a SDO_GEOMETRY column)
+-- Duration: 0.1-0.2 seconds, 20x faster
+with data as (
+       select m.id_machine as id, 
+              (select d.geometry from devices_relational d where m.id_machine = d.id_machine) as geometry,
+--              (select json_value( d.json_document, '$.geometry' RETURNING SDO_GEOMETRY ) from devices d where d.json_document.id_machine.string() = m.id_machine) as geometry,
+              -- Machine Learning scoring over features from JSON fields
+              PREDICTION(PM_RF_AUTOML USING m.*) as prediction,
+              -- Machine Learning scoring over features from JSON fields
+              PREDICTION_probability(PM_RF_AUTOML USING m.*) as prediction_probability
+        from device_metrics_view m)
+-- Select devices for Heatmap (with failure prediction confidence greater than 80%)
+select id, geometry, '' as infotip, 'red' as style, 'heat' as layer, 'C9' as markersize from data d
+where d.prediction = 1 and prediction_probability >= 0.8
+union all
+-- Select all devices for green/red markers
+select id, geometry, 'Device '||id|| ' (confidence:' || to_char(100*prediction_probability,'999.9') || '%)' as infotip, 
+       case when prediction = 0 or prediction_probability < 0.8 then 'green' else 'red' end as style, 
+       '1' as layer, 
+       'C9' as markersize 
+from data d;
