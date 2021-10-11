@@ -2,5 +2,6 @@
 /dist/
 npm-debug.log
 /loader/node_modules/
+/predictive-maintenance-react-app/node_modules/
 package-lock.json
 
